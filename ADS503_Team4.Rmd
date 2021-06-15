@@ -1,0 +1,42 @@
+---
+title: "ADS-503 Team 4 Final Project"
+author:
+  - Leonard Littleton
+  - Lina Nguyen
+  - Emanuel Lucban
+date: "6/13/21"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(readr)
+library(data.table)
+library(mlbench)
+library(ggplot2)
+library(tidyr)
+library(corrplot)
+library(e1071)
+library(caret)
+library(naniar)
+library(MLmetrics)
+```
+
+
+# Synthetic Financial Datasets For Fraud Detection
+
+```{r}
+synth_df <- fread('./data/PS_20174392719_1491204439457_log.csv', header = TRUE)
+```
+
+# Exploratory Data Analysis
+
+```{r}
+head(synth_df)
+```
+```{r}
+summary(synth_df)
+```
