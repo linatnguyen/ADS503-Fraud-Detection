@@ -38,5 +38,57 @@ synth_df <- fread('./data/PS_20174392719_1491204439457_log.csv', header = TRUE)
 head(synth_df)
 ```
 ```{r}
+synth_df$isFraud <- as.factor(synth_df$isFraud)
+synth_df$isFlaggedFraud <- as.factor(synth_df$isFlaggedFraud)
 summary(synth_df)
 ```
+
+## Null Values
+```{r}
+sapply(synth_df, function(x) sum(is.na(x)))
+```
+There are no null values in any of the predictors.
+
+
+## Target Variable Distribution
+```{r}
+ggplot(gather(synth_df[, 10:11]), aes(value)) + geom_bar() + facet_wrap(~key, scales = 'free_y')
+```
+
+## Continuous Predictors Distribution
+```{r}
+ggplot(gather(synth_df[, c('amount', 'oldbalanceOrg', 'newbalanceOrig', 'oldbalanceDest', 'newbalanceDest')]), aes(value)) +
+geom_histogram(bins = 20) +
+facet_wrap(~key, scales = 'free_x')
+```
+
+## Nominal Predictors Distribution
+```{r}
+synth_df$step <- as.factor(synth_df$step)
+synth_df$type <- as.factor(synth_df$type)
+synth_df$nameOrig <- as.factor(synth_df$nameOrig)
+synth_df$nameDest <- as.factor(synth_df$nameDest)
+ggplot(gather(synth_df[, c('step', 'type', 'nameOrig', 'nameDest')]), aes(value)) +
+geom_bar() +
+facet_wrap(~key, scales = 'free_x')
+```
+
+## Near Zero Variance
+```{r}
+nearZeroVar(subset(synth_df, select = -c(isFraud, isFlaggedFraud)))
+```
+
+There are no degenerate distributions in the dataset.
+
+## Correlation
+```{r}
+synth_df$isFraud <- as.numeric(synth_df$isFraud)
+synth_df$isFlaggedFraud <- as.numeric(synth_df$isFlaggedFraud)
+cor(synth_df[, c('amount', 'oldbalanceOrg', 'newbalanceOrig', 'oldbalanceDest', 
+                 'newbalanceDest', 'isFraud', 'isFlaggedFraud')])
+```
+```{r}
+corrplot::corrplot(cor(synth_df[, c('amount', 'oldbalanceOrg', 'newbalanceOrig', 'oldbalanceDest', 
+                 'newbalanceDest', 'isFraud', 'isFlaggedFraud')]))
+```
+
