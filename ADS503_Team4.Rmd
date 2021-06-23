@@ -23,6 +23,7 @@ library(e1071)
 library(caret)
 library(naniar)
 library(MLmetrics)
+library(dplyr)
 ```
 
 
@@ -52,43 +53,219 @@ There are no null values in any of the predictors.
 
 ## Target Variable Distribution
 ```{r}
-ggplot(gather(synth_df[, 10:11]), aes(value)) + geom_bar() + facet_wrap(~key, scales = 'free_y')
+ggplot(gather(synth_df[, 10:11]), aes(value)) + geom_bar(fill = "steelblue") + facet_wrap(~key, scales = 'free_y')
+```
+
+The data dictionary describes the variable isFlaggedFraud as an attempt to transfer more than 200,000 in a single transaction. From the summary, there are only 16 positive observations. We have decided to focus our attention to the isFraud variable as our target and will drop isFlaggedFraud from the dataset.
+
+```{r}
+synth_df <- subset(synth_df, select = -c(isFlaggedFraud))
 ```
 
 ## Continuous Predictors Distribution
 ```{r}
 ggplot(gather(synth_df[, c('amount', 'oldbalanceOrg', 'newbalanceOrig', 'oldbalanceDest', 'newbalanceDest')]), aes(value)) +
-geom_histogram(bins = 20) +
+geom_histogram(bins = 20, fill = "steelblue") +
 facet_wrap(~key, scales = 'free_x')
 ```
 
-## Nominal Predictors Distribution
+From the continuous distributions above there is a high right skew due to the presence of large outliers, meaning small number of customers with very large balances. Box-Cox or Log transformations can be performed to mitigate the effect of the outliers.
+
+
+## Transaction Frequency by Hour
 ```{r}
-synth_df$step <- as.factor(synth_df$step)
-synth_df$type <- as.factor(synth_df$type)
-synth_df$nameOrig <- as.factor(synth_df$nameOrig)
-synth_df$nameDest <- as.factor(synth_df$nameDest)
-ggplot(gather(synth_df[, c('step', 'type', 'nameOrig', 'nameDest')]), aes(value)) +
-geom_bar() +
-facet_wrap(~key, scales = 'free_x')
+ggplot(data = synth_df, aes(x=step)) + 
+  geom_line(stat = 'count', color = "steelblue") + xlab("Hour") + ylab("Number of Transactions") + 
+  ggtitle("Transaction Frequency by Hour")
 ```
+
+The predictor Step is an interval of time by hour, the dataset is a collection transactions for each hour for an approximate 30 day period, in this case 744 hours total. The barplot represents the number of transactions for each hour of the 30 day period. This predictor will be further analyzed by re-sampling time intervals by intraday (mod 24), intraweek (mod 168), etc.
+
+
+## Count of unique values from Nominal predictors
+```{r}
+nominals <- c('type', 'nameOrig', 'nameDest')
+data.frame(predictor = nominals, count = c(length(unique(synth_df[,'type']$type)),
+                                           length(unique(synth_df[, 'nameOrig']$nameOrig)),
+                                           length(unique(synth_df[, 'nameDest']$nameDest))))
+```
+
+Due to the large amount of unique categorical values of the predictors nameOrig and nameDest, it would be impractical to perform one-hot encoding on these values so it was decided that these predictors will be excluded.
+
+```{r}
+reduced_df <- subset(synth_df, select = -c(nameOrig, nameDest))
+```
+
+## Distribution of Nominal Predictors
+```{r}
+ggplot(data = reduced_df, aes(type)) + geom_bar(fill = "steelblue")
+```
+
 
 ## Near Zero Variance
 ```{r}
-nearZeroVar(subset(synth_df, select = -c(isFraud, isFlaggedFraud)))
+nearZeroVar(subset(reduced_df, select = -c(isFraud)))
 ```
 
 There are no degenerate distributions in the dataset.
 
 ## Correlation
 ```{r}
-synth_df$isFraud <- as.numeric(synth_df$isFraud)
-synth_df$isFlaggedFraud <- as.numeric(synth_df$isFlaggedFraud)
-cor(synth_df[, c('amount', 'oldbalanceOrg', 'newbalanceOrig', 'oldbalanceDest', 
-                 'newbalanceDest', 'isFraud', 'isFlaggedFraud')])
+reduced_df$isFraud = as.numeric(as.character(reduced_df$isFraud))
+
+# exclude type
+data_corr <- cor(subset(reduced_df, select = -c(type)))
+data_corr
 ```
 ```{r}
-corrplot::corrplot(cor(synth_df[, c('amount', 'oldbalanceOrg', 'newbalanceOrig', 'oldbalanceDest', 
-                 'newbalanceDest', 'isFraud', 'isFlaggedFraud')]))
+corrplot::corrplot(data_corr)
 ```
+
+As shown by the heatplot, the predictor pairs (newbalanceOrg, oldbalanceOrg) and (newbalanceDest, oldbalanceDest) are correlated, which is expected since each datapoint represents a transaction and the old and new balances represent pre and post transaction. However, correlated predictors may cause issues during the modeling process and decorrelation may be necessary. 
+
+## Analysis of fraudulent transactions
+
+**Average amount of fraudulent transactions**  
+```{r}
+median(reduced_df[reduced_df$isFraud == 1, ]$amount)
+```
+
+Due to the extreme right skew, the median was used instead of the mean. The median amount of fraudlent transactions is 441423.4 (local currency)
+
+
+**Fraudulent transactions by type**
+```{r}
+ggplot(data = reduced_df[reduced_df$isFraud == 1, ], aes(x=as.factor(isFraud))) + 
+  geom_bar(stat = 'count', fill = "red") + 
+  ggtitle(label = "Fraudulent transactions count by type") + xlab('Is Fraud') + ylab('Count') + 
+  facet_wrap(~type)
+```
+
+Fraudulent transactions in the dataset **only** occur when the transaction type is CASH_OUT or TRANSFER
+
+
+**Frequency of fraudulent transactions by each hour**
+```{r}
+fraud_by_hour <- reduced_df[reduced_df$isFraud == 1, ] %>%
+	               group_by(step) %>%
+	               count(step)
+
+ggplot(data = fraud_by_hour, aes(x=step, y=n)) + geom_line(stat = 'identity', color="red") +
+  ggtitle("Fraudulent Transaction Frequency by Hour") + 
+  xlab("Hour") + ylab("Number of Fraudulent Transactions")
+```
+
+**Time Series Analysis - Downsampling**
+
+In order to further analyze patterns in fraudulent activity, we need to resample the time series frequency of step from hours to days and weeks.
+
+```{r}
+# By Day will group data points by the day of the month 
+# Hours Intraday will group data points by the hour of day
+# Day of Week will group data points by the day of the week
+reduced_df <- cbind(reduced_df, data.frame(hours_intraday = reduced_df$step %% 24, 
+                                           by_day = round(reduced_df$step / 24), 
+                                           day_of_week = round(reduced_df$step / 24) %% 7))
+```
+
+**Fraudulent Transaction Frequency by Day of the Month**
+```{r warning=FALSE}
+fraud_byday <- reduced_df[reduced_df$isFraud == 1, ] %>%
+	                group_by(by_day) %>%
+	                count(by_day)
+
+ggplot(data = fraud_byday, aes(x=by_day, y=n)) + geom_line(stat = 'identity', color="red") +
+  ggtitle("Fraudulent Transaction Frequency by Day of the Month") + 
+  xlab("Day") + ylab("Number of Fraudulent Transactions") + 
+  scale_x_discrete(limits = 0:31)
+```
+
+Aggregation by day of the month shows peaks of fraudulent transactions on the 2nd and 17th day. The lowest recorded fraudulent transactions occured on the 5th day.
+
+
+**Intraday Fraudulent Transactions**
+```{r warning=FALSE}
+fraud_intraday <- reduced_df[reduced_df$isFraud == 1, ] %>%
+	                group_by(hours_intraday) %>%
+	                count(hours_intraday)
+
+ggplot(data = fraud_intraday, aes(x=hours_intraday, y=n)) + geom_line(stat = 'identity', color="red") +
+  ggtitle("Fraudulent Transaction Frequency by Hours of the Day") + 
+  xlab("Hour (24 Hour Period)") + ylab("Number of Fraudulent Transactions") + 
+  scale_x_discrete(limits = 0:23)
+```
+
+Aggregation by hours of the day reveals that the lowest number of fraudulent activity occurs at 4am and peaks at 10am.
+
+
+**Fraudulent Transaction Frequency by Day of Week**
+```{r warning=FALSE}
+fraud_dayofweek <- reduced_df[reduced_df$isFraud == 1, ] %>%
+	                group_by(day_of_week) %>%
+	                count(day_of_week)
+
+ggplot(data = fraud_dayofweek, aes(x=day_of_week, y=n)) + geom_line(stat = 'identity', color="red") +
+  ggtitle("Fraudulent Transaction Frequency by Day of Week") + 
+  xlab("Day of Week") + ylab("Number of Fraudulent Transactions") + 
+  scale_x_discrete(limits = 0:6, labels = c('Sun', 'Mon', 'Tues', 'Wed', 'Thu', 'Fri', 'Sat'))
+```
+
+Aggregation by day of the week reveals that most fraudulent transactions occur from Monday - Wednesday and peaks on Tuesdays. The lowest number of fraudulent transactions occurs on Fridays.
+
+# Data Preparation
+
+**Log Transformation of Continuous Predictors**
+
+In order to deal with the outliers and extreme right skew of the continuous variables, we will perform log transformations for each continuous predictor
+
+```{r}
+# Log transform  (amount, oldbalanceOrg, newbalanceOrig, oldbalanceDest, newbalanceDest)
+cont_vars <- c('amount', 'oldbalanceOrg', 'newbalanceOrig', 'oldbalanceDest', 'newbalanceDest')
+
+# add small constant to prevent inf values
+log_scaled <- sapply(data.frame(reduced_df)[, cont_vars], function(x) log(x + 1))
+colnames(log_scaled) <- lapply(cont_vars, function(x) paste('log_', x, sep=''))
+
+
+reduced_df <- cbind(reduced_df, log_scaled)
+```
+
+**Transformed Distributions**
+```{r}
+ggplot(gather(reduced_df[, 12:16]), aes(value)) + 
+  geom_histogram(bins = 30, fill = "steelblue") +
+  facet_wrap(~key, scales = 'free_x')
+```
+
+**One-Hot Encode Categorical Predictor**
+```{r}
+reduced_df$type <- as.factor(reduced_df$type)
+dmy <- dummyVars(" ~ type", data = reduced_df, sep = '.', fullRank = TRUE)
+reduced_df <- cbind(reduced_df, data.frame(predict(dmy, newdata = reduced_df)))
+# drop type
+reduced_df <- subset(reduced_df, select = -c(type))
+```
+
+**Split Data into Training and Test Datasets using Stratified Random Sampling**
+```{r}
+set.seed(42)
+
+# split x and y
+x <- subset(reduced_df, select = -c(isFraud))
+y <- reduced_df$isFraud
+
+data_part <- createDataPartition(y = y, p = 0.75, list = FALSE)
+
+x_train <- x[data_part, ]
+y_train <- y[data_part]
+x_test <- x[-data_part, ]
+y_test <- y[-data_part]
+```
+
+```{r}
+summary(x_train)
+```
+
+
+
 
