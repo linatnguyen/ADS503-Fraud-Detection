@@ -1,0 +1,238 @@
+---
+title: "ADS-503 Team 4 Final Project"
+author:
+  - Leonard Littleton
+  - Lina Nguyen
+  - Emanuel Lucban
+date: "6/13/21"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(readr)
+library(data.table)
+library(mlbench)
+library(ggplot2)
+library(tidyr)
+library(corrplot)
+library(e1071)
+library(caret)
+library(naniar)
+library(MLmetrics)
+library(dplyr)
+library(MASS)
+library(pROC)
+
+# Parallel Processing
+library(doParallel)
+cl <- makePSOCKcluster(8)
+
+```
+
+
+# Synthetic Financial Datasets For Fraud Detection
+
+## Data Preparation
+
+```{r}
+synth_df <- fread('./data/PS_20174392719_1491204439457_log.csv', header = TRUE)
+synth_df <- subset(synth_df, select = -c(isFlaggedFraud, nameOrig, nameDest))
+
+synth_df <- cbind(synth_df, data.frame(hours_intraday = synth_df$step %% 24, 
+                                           by_day = round(synth_df$step / 24), 
+                                           day_of_week = round(synth_df$step / 24) %% 7))
+
+# Log transform  (amount, oldbalanceOrg, newbalanceOrig, oldbalanceDest, newbalanceDest)
+cont_vars <- c('amount', 'oldbalanceOrg', 'newbalanceOrig', 'oldbalanceDest', 'newbalanceDest')
+
+# add small constant to prevent inf values
+log_scaled <- sapply(data.frame(synth_df)[, cont_vars], function(x) log(x + 1))
+colnames(log_scaled) <- lapply(cont_vars, function(x) paste('log_', x, sep=''))
+
+
+synth_df <- cbind(synth_df, log_scaled)
+synth_df$type <- as.factor(synth_df$type)
+dmy <- dummyVars(" ~ type", data = synth_df, sep = '.', fullRank = TRUE)
+synth_df <- cbind(synth_df, data.frame(predict(dmy, newdata = synth_df)))
+# drop type
+synth_df <- subset(synth_df, select = -c(type))
+```
+
+**Split Data into Training and Test Datasets using Stratified Random Sampling**
+```{r}
+set.seed(42)
+
+# split x and y
+x <- subset(synth_df, select = -c(isFraud))
+y <- synth_df$isFraud
+
+data_part <- createDataPartition(y = y, p = 0.75, list = FALSE)
+
+x_train <- x[data_part, ]
+y_train <- y[data_part]
+x_test <- x[-data_part, ]
+y_test <- y[-data_part]
+
+y_train <- as.factor(y_train)
+y_test <- as.factor(y_test)
+levels(y_train) <- c('no', 'yes')
+levels(y_test) <- c('no', 'yes')
+```
+
+
+# Modeling
+
+```{r}
+# SET TRUE TO TRAIN MODELS
+TRAIN = FALSE
+```
+
+```{r}
+# train control
+ctrl <- trainControl(method = "cv",
+                     number = 5,
+                     summaryFunction = prSummary,
+                     classProbs = TRUE,
+                     savePredictions = TRUE)
+
+# Register Parallel Processing
+registerDoParallel(cl)
+```
+
+## Neural Network
+
+**Training**
+```{r}
+if (TRAIN){
+  nnTuning <- expand.grid(size = c(1:5),
+                                  decay = c(0.01, 0.05, 0.1))
+  nnetModel <- train(x_train, y_train, 
+                     method = "nnet",
+                     metric = 'AUC',
+                     trControl= ctrl,
+                     tuneGrid = nnTuning,
+                     preProcess=c("scale","center"))
+  
+  saveRDS(nnetModel, "rds_files/nnet_model.rds")
+} else {
+  nnetModel <- readRDS('rds_files/nnet_model.rds')
+}
+```
+
+```{r}
+nnetModel
+```
+
+**Neural Network Prediction on Test Data**
+```{r}
+nnetPred <- predict(nnetModel, newdata = x_test)
+nnetCFM <- confusionMatrix(nnetPred, y_test, positive = 'yes')
+nnetCFM
+```
+
+**Neural Network Variable Importance**
+```{r}
+varImp(nnetModel)
+```
+
+_____
+
+## Linear Discriminant Analysis
+
+**Training**
+```{r}
+if (TRAIN) {
+  ldaModel <- train(x_train, y_train, 
+                     method = "lda",
+                     metric = 'AUC',
+                     trControl= ctrl,
+                     preProcess=c("scale","center"),
+                     tuneLength = 10,
+                     verbose = FALSE, trace = FALSE)
+  
+  saveRDS(ldaModel, "rds_files/lda_model.rds")
+} else {
+  ldaModel <- readRDS('rds_files/lda_model.rds')
+}
+```
+
+```{r}
+ldaModel
+```
+
+**LDA Prediction on Test Data**
+```{r}
+ldaPred <- predict(ldaModel, newdata = x_test)
+ldaCFM <- confusionMatrix(ldaPred, y_test, positive = 'yes')
+ldaCFM
+```
+
+**LDA Variable Importance**
+```{r}
+varImp(ldaModel)
+```
+
+_____
+
+## Quadratic Discriminant Analysis
+
+**Training**
+```{r}
+if (TRAIN) {
+  qdaModel <- train(x_train, y_train, 
+                     method = "qda",
+                     metric = 'AUC',
+                     trControl= ctrl,
+                     preProcess=c("pca", "scale","center"),
+                     tuneLength = 10,
+                     verbose = FALSE, trace = FALSE)
+  saveRDS(qdaModel, "rds_files/qda_model.rds")
+} else {
+  qdaModel <- readRDS('rds_files/qda_model.rds')
+}
+```
+
+```{r}
+qdaModel
+```
+
+**QDA Prediction on Test Data**
+```{r}
+qdaPred <- predict(qdaModel, newdata = x_test)
+qdaCFM <- confusionMatrix(qdaPred, y_test, positive = 'yes')
+qdaCFM
+```
+
+**QDA Variable Importance**
+```{r}
+varImp(qdaModel)
+```
+
+
+```{r}
+# Stop cluster and parallel processing
+stopCluster(cl)
+registerDoSEQ()
+```
+
+
+## ROC Plots
+
+```{r}
+roc_list <- list("Neural Network" = roc(y_test, predict(nnetModel, newdata = x_test, type = 'prob')$yes),
+                 "LDA" = roc(y_test, predict(ldaModel, newdata = x_test, type = 'prob')$yes),
+                 "QDA" = roc(y_test, predict(qdaModel, newdata = x_test, type = 'prob')$yes))
+
+ggroc(roc_list, legacy.axes = TRUE) + scale_linetype_discrete() + ggtitle("Model ROC Curves") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1),
+                 color="darkgrey", linetype="dashed")
+```
+
+
+
+
+
