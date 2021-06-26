@@ -1,0 +1,130 @@
+---
+title: "ADS-503 Team 4 Final Project"
+author:
+  - Leonard Littleton
+  - Lina Nguyen
+  - Emanuel Lucban
+date: "6/13/21"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+```{r}
+library(readr)
+library(data.table)
+library(mlbench)
+library(ggplot2)
+library(tidyr)
+library(corrplot)
+library(e1071)
+library(caret)
+library(naniar)
+library(MLmetrics)
+library(dplyr)
+library(MASS)
+library(pROC)
+# Parallel Processing
+library(doParallel)
+cl <- makePSOCKcluster(8)
+```
+
+
+# Synthetic Financial Datasets For Fraud Detection
+
+## Data Preparation
+
+```{r}
+synth_df <- fread('/Users/linanguyen/Desktop/PS_20174392719_1491204439457_log.csv', header = TRUE)
+synth_df <- subset(synth_df, select = -c(isFlaggedFraud, nameOrig, nameDest))
+synth_df <- cbind(synth_df, data.frame(hours_intraday = synth_df$step %% 24, 
+                                           by_day = round(synth_df$step / 24), 
+                                           day_of_week = round(synth_df$step / 24) %% 7))
+# Log transform  (amount, oldbalanceOrg, newbalanceOrig, oldbalanceDest, newbalanceDest)
+cont_vars <- c('amount', 'oldbalanceOrg', 'newbalanceOrig', 'oldbalanceDest', 'newbalanceDest')
+# add small constant to prevent inf values
+log_scaled <- sapply(data.frame(synth_df)[, cont_vars], function(x) log(x + 1))
+colnames(log_scaled) <- lapply(cont_vars, function(x) paste('log_', x, sep=''))
+synth_df <- cbind(synth_df, log_scaled)
+synth_df$type <- as.factor(synth_df$type)
+dmy <- dummyVars(" ~ type", data = synth_df, sep = '.', fullRank = TRUE)
+synth_df <- cbind(synth_df, data.frame(predict(dmy, newdata = synth_df)))
+# drop type
+synth_df <- subset(synth_df, select = -c(type))
+```
+
+**Split Data into Training and Test Datasets using Stratified Random Sampling**
+```{r}
+set.seed(42)
+# split x and y
+x <- subset(synth_df, select = -c(isFraud))
+y <- synth_df$isFraud
+data_part <- createDataPartition(y = y, p = 0.75, list = FALSE)
+x_train <- x[data_part, ]
+y_train <- y[data_part]
+x_test <- x[-data_part, ]
+y_test <- y[-data_part]
+y_train <- as.factor(y_train)
+y_test <- as.factor(y_test)
+levels(y_train) <- c('no', 'yes')
+levels(y_test) <- c('no', 'yes')
+```
+
+
+
+##Random Forest
+```{r}
+library(pROC)
+train <- data.frame(x_train, y_train)
+test<- data.frame(x_test, y_test)
+
+
+control <- trainControl(method = 'repeatedcv', number = 10, repeats = 3, classProbs = TRUE)
+library(randomForest)
+set.seed(222)
+rf <- train(make.names(y_train)~., data = x_train, method = 'rf', metric = 'Accuracy', trControl = control, ntree = 2000)
+print(rf)
+print(rf$finalModel)
+
+#confusion matrix
+set.seed(3)
+rfpredict <- predict(rf, newdata = test)
+confusionMatrix(rfpredict, test$y_test)
+
+#AUC curve
+rfroc <- pROC::roc(response = train$y_test, predictor = predictions[,1])
+rfauc <- rfroc$auc[1]
+rfauc
+```
+##knn
+```{r}
+set.seed(3)
+knn <- train(x_train, y_train, method = 'knn', preProcess = c('center', 'scale'), tuneLength = 10, trControl(method = 'cv'))
+
+#confusion matrix
+set.seed(3)
+knnpredict <- predict(knn, newdata = x_test)
+confusionMatrix(knnpredict, y_test)
+
+##AUC curve
+knnpredict <- predict(knn, x_train, type = 'prob')
+knnroc <- pROC::roc(reponse = y_train, predictor = knnpredict[,1])
+knnauc <- knnroc$auc[1]
+knnauc
+```
+
+##Logistic Regression
+```{r}
+ctrl <- trainControl(summaryFunction = twoClassSummary, classProbs = TRUE)
+set.seed(111)
+lr <- train(x_train, y= y_train, method = 'glm', metric = 'ROC', trControl = ctrl)
+lr
+
+confusionMatrix(data = lr$pred$pred, reference = lr$pred$obs)
+lrROC <- roc(response = lr$pred$obs, predictor = lr$pred$successful, levels = rev(levels(lr$pred$obs)))
+plot(lrROC, legacy.axes = TRUE)
+auc(lrROC)
+
+
+```
