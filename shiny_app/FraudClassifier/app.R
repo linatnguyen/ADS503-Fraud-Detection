@@ -6,7 +6,7 @@
 #
 #    http://shiny.rstudio.com/
 #
-
+library(caret)
 library(shiny)
 library(shinyTime)
 library(ggplot2)
