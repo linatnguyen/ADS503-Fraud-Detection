@@ -25,9 +25,10 @@ library(MLmetrics)
 library(dplyr)
 library(MASS)
 library(pROC)
+library(randomForest)
 # Parallel Processing
 library(doParallel)
-cl <- makePSOCKcluster(8)
+cl <- makePSOCKcluster(4)
 ```
 
 
@@ -36,7 +37,7 @@ cl <- makePSOCKcluster(8)
 ## Data Preparation
 
 ```{r}
-synth_df <- fread('/Users/linanguyen/Desktop/PS_20174392719_1491204439457_log.csv', header = TRUE)
+synth_df <- fread('./data/PS_20174392719_1491204439457_log.csv', header = TRUE)
 synth_df <- subset(synth_df, select = -c(isFlaggedFraud, nameOrig, nameDest))
 synth_df <- cbind(synth_df, data.frame(hours_intraday = synth_df$step %% 24, 
                                            by_day = round(synth_df$step / 24), 
@@ -75,15 +76,16 @@ levels(y_test) <- c('no', 'yes')
 
 ##Random Forest
 ```{r}
-library(pROC)
-train <- data.frame(x_train, y_train)
-test<- data.frame(x_test, y_test)
+#registerDoParallel(cl)
+control <- trainControl(method = 'cv', number = 5, classProbs = TRUE, summaryFunction = prSummary)
 
+gbm <- train(x_train, y_train, method = 'gbm', metric = 'AUC', 
+            preProcess = c('center', 'scale'), 
+            trControl = control)
+saveRDS(lr, file = 'rds_files/gbm_model.rds')
+```
 
-control <- trainControl(method = 'repeatedcv', number = 10, repeats = 3, classProbs = TRUE)
-library(randomForest)
-set.seed(222)
-rf <- train(make.names(y_train)~., data = x_train, method = 'rf', metric = 'Accuracy', trControl = control, ntree = 2000)
+```{r}
 print(rf)
 print(rf$finalModel)
 
@@ -99,9 +101,13 @@ rfauc
 ```
 ##knn
 ```{r}
-set.seed(3)
-knn <- train(x_train, y_train, method = 'knn', preProcess = c('center', 'scale'), tuneLength = 10, trControl(method = 'cv'))
+registerDoParallel(cl)
+control <- trainControl(method = 'cv', number = 5, classProbs = TRUE, summaryFunction = prSummary)
+knn <- train(x_train, y_train, method = 'knn', preProcess = c('center', 'scale'), tuneLength = 5, trainControl = control, metric = 'AUC')
+saveRDS(knn, file = 'rds_files/knn_model.rds')
+```
 
+```{r}
 #confusion matrix
 set.seed(3)
 knnpredict <- predict(knn, newdata = x_test)
@@ -116,11 +122,26 @@ knnauc
 
 ##Logistic Regression
 ```{r}
-ctrl <- trainControl(summaryFunction = twoClassSummary, classProbs = TRUE)
-set.seed(111)
-lr <- train(x_train, y= y_train, method = 'glm', metric = 'ROC', trControl = ctrl)
-lr
 
+registerDoParallel(cl)
+#registerDoSEQ()
+ctrl <- trainControl(summaryFunction = prSummary, classProbs = TRUE)
+lr <- train(x_train, y= y_train, method = 'glm', preProcess = c('center', 'scale'), metric = 'AUC', trControl = ctrl)
+lr
+saveRDS(lr, file = 'rds_files/lr_model.rds')
+```
+```{r}
+lrModel <- readRDS('rds_files/lr_model.rds')
+```
+
+```{r}
+lrPred <- predict(lrModel, newdata = x_test)
+lrCFM <- confusionMatrix(lrPred, y_test, positive = 'yes')
+lrProbs <- predict(lrModel, newdata = x_test, type = 'prob')
+lrCFM
+```
+
+```{r}
 confusionMatrix(data = lr$pred$pred, reference = lr$pred$obs)
 lrROC <- roc(response = lr$pred$obs, predictor = lr$pred$successful, levels = rev(levels(lr$pred$obs)))
 plot(lrROC, legacy.axes = TRUE)
@@ -128,3 +149,13 @@ auc(lrROC)
 
 
 ```
+
+
+```{r}
+lrROC <- roc(y_test, predict(lrModel, newdata = x_test, type = 'prob')$yes)
+saveRDS(lrROC, file = 'rds_files/lr_roc.rds')
+
+```
+
+
+

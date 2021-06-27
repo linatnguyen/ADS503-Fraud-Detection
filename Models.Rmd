@@ -1,0 +1,433 @@
+---
+title: "ADS-503 Team 4 Modeling"
+author:
+  - Leonard Littleton
+  - Lina Nguyen
+  - Emanuel Lucban
+date: "6/25/21"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(readr)
+library(data.table)
+library(mlbench)
+library(ggplot2)
+library(tidyr)
+library(corrplot)
+library(e1071)
+library(caret)
+library(naniar)
+library(MLmetrics)
+library(dplyr)
+library(MASS)
+library(pROC)
+
+# Parallel Processing
+library(doParallel)
+cl <- makePSOCKcluster(5)
+
+```
+
+
+# Synthetic Financial Datasets For Fraud Detection
+
+## Data Preparation
+
+```{r}
+synth_df <- fread('./data/PS_20174392719_1491204439457_log.csv', header = TRUE)
+synth_df <- subset(synth_df, select = -c(isFlaggedFraud, nameOrig, nameDest))
+
+synth_df <- cbind(synth_df, data.frame(hours_intraday = synth_df$step %% 24, 
+                                           by_day = round(synth_df$step / 24), 
+                                           day_of_week = round(synth_df$step / 24) %% 7))
+
+# Log transform  (amount, oldbalanceOrg, newbalanceOrig, oldbalanceDest, newbalanceDest)
+cont_vars <- c('amount', 'oldbalanceOrg', 'newbalanceOrig', 'oldbalanceDest', 'newbalanceDest')
+
+# add small constant to prevent inf values
+log_scaled <- sapply(data.frame(synth_df)[, cont_vars], function(x) log(x + 1))
+colnames(log_scaled) <- lapply(cont_vars, function(x) paste('log_', x, sep=''))
+
+
+synth_df <- cbind(synth_df, log_scaled)
+synth_df$type <- as.factor(synth_df$type)
+dmy <- dummyVars(" ~ type", data = synth_df, sep = '.', fullRank = TRUE)
+synth_df <- cbind(synth_df, data.frame(predict(dmy, newdata = synth_df)))
+# drop type
+synth_df <- subset(synth_df, select = -c(type))
+```
+
+**Split Data into Training and Test Datasets using Stratified Random Sampling**
+```{r}
+set.seed(42)
+
+# split x and y
+x <- subset(synth_df, select = -c(isFraud))
+y <- synth_df$isFraud
+
+data_part <- createDataPartition(y = y, p = 0.75, list = FALSE)
+
+x_train <- x[data_part, ]
+y_train <- y[data_part]
+x_test <- x[-data_part, ]
+y_test <- y[-data_part]
+
+y_train <- as.factor(y_train)
+y_test <- as.factor(y_test)
+levels(y_train) <- c('no', 'yes')
+levels(y_test) <- c('no', 'yes')
+```
+
+
+# Modeling
+
+```{r}
+# SET TRUE TO TRAIN MODELS
+TRAIN = FALSE
+```
+
+```{r}
+# train control
+ctrl <- trainControl(method = "cv",
+                     number = 5,
+                     summaryFunction = prSummary,
+                     classProbs = TRUE,
+                     savePredictions = TRUE)
+
+# Register Parallel Processing
+registerDoParallel(cl)
+```
+
+## Neural Network
+
+**Training**
+```{r}
+if (TRAIN){
+  nnTuning <- expand.grid(size = c(1:5),
+                                  decay = c(0.01, 0.05, 0.1))
+  nnetModel <- train(x_train, y_train, 
+                     method = "nnet",
+                     metric = 'AUC',
+                     trControl= ctrl,
+                     tuneGrid = nnTuning,
+                     preProcess=c("scale","center"))
+  
+  saveRDS(nnetModel, "rds_files/nnet_model.rds")
+} else {
+  nnetModel <- readRDS('rds_files/nnet_model.rds')
+}
+```
+
+```{r}
+nnetModel
+```
+
+**Neural Network Prediction on Test Data**
+```{r}
+nnetPred <- readRDS('rds_files/nnet_pred.rds')
+nnetCFM <- confusionMatrix(nnetPred, y_test, positive = 'yes')
+nnetCFM
+```
+
+**Neural Network Variable Importance**
+```{r}
+varImp(nnetModel)
+```
+
+_____
+
+## Linear Discriminant Analysis
+
+**Training**
+```{r}
+if (TRAIN) {
+  ldaModel <- train(x_train, y_train, 
+                     method = "lda",
+                     metric = 'AUC',
+                     trControl= ctrl,
+                     preProcess=c("scale","center"),
+                     tuneLength = 10,
+                     verbose = FALSE, trace = FALSE)
+  
+  saveRDS(ldaModel, "rds_files/lda_model.rds")
+} else {
+  ldaModel <- readRDS('rds_files/lda_model.rds')
+}
+```
+
+```{r}
+ldaModel
+```
+
+**LDA Prediction on Test Data**
+```{r}
+ldaPred <- readRDS('rds_files/lda_pred.rds')
+ldaCFM <- confusionMatrix(ldaPred, y_test, positive = 'yes')
+ldaCFM
+```
+
+**LDA Variable Importance**
+```{r}
+varImp(ldaModel)
+```
+
+_____
+
+## Quadratic Discriminant Analysis
+
+**Training**
+```{r}
+if (TRAIN) {
+  qdaModel <- train(x_train, y_train, 
+                     method = "qda",
+                     metric = 'AUC',
+                     trControl= ctrl,
+                     preProcess=c("pca", "scale","center"),
+                     tuneLength = 10,
+                     verbose = FALSE, trace = FALSE)
+  saveRDS(qdaModel, "rds_files/qda_model.rds")
+} else {
+  qdaModel <- readRDS('rds_files/qda_model.rds')
+}
+```
+
+```{r}
+qdaModel
+```
+
+**QDA Prediction on Test Data**
+```{r}
+qdaPred <- readRDS('rds_files/qda_pred.rds')
+qdaCFM <- confusionMatrix(qdaPred, y_test, positive = 'yes')
+qdaCFM
+```
+
+**QDA Variable Importance**
+```{r}
+varImp(qdaModel)
+```
+
+____
+
+
+## Logistic Regression
+
+**Training**
+```{r}
+if (TRAIN) {
+  ctrl <- trainControl(summaryFunction = prSummary, classProbs = TRUE)
+  lrModel <- train(x_train, y= y_train, method = 'glm', 
+                   preProcess = c('center', 'scale'), 
+                   metric = 'AUC', trControl = ctrl)
+  saveRDS(lrModel, "rds_files/lr_model.rds")
+} else {
+  lrModel <- readRDS('rds_files/lr_model.rds')
+}
+```
+
+```{r}
+lrModel
+```
+
+**Logistic Regression Prediction on Test Data**
+```{r}
+lrPred <- readRDS('rds_files/lr_pred.rds')
+lrCFM <- confusionMatrix(lrPred, y_test, positive = 'yes')
+lrCFM
+```
+
+
+**Logistic Regression Variable Importance**
+```{r}
+varImp(lrModel)
+```
+
+_____
+
+## Partial Least Squares Discriminant Analysis
+
+**Training**
+```{r}
+if (TRAIN) {
+  plsdaModel <- train(x=x_train, y = y_train,
+                    preProcess = c("center", "scale"),
+                    method = "pls", metric = "AUC",
+                    trControl = ctrl,
+                    tuneGrid = expand.grid(.ncomp = 1:5),
+                    verbose = FALSE, trace = FALSE)
+  saveRDS(plsdaModel, 'rds_files/plsda_model.rds')
+} else {
+  plsdaModel <- readRDS('rds_files/plsda_model.rds')
+}
+```
+```{r}
+plsdaModel
+```
+
+**PLSDA on Test Data**
+```{r}
+plsdaPred <- readRDS('rds_files/plsda_pred.rds')
+plsdaCFM <- confusionMatrix(plsdaPred, y_test, positive = 'yes')
+plsdaCFM
+```
+
+**PLSDA Variable Importance**
+```{r}
+varImp(plsdaModel)
+```
+
+_____
+
+## Support Vector Machines
+**Training**
+```{r}
+if (TRAIN) {
+  svmRdcd <- sigest(as.matrix(x_train))
+  svmTuning <- expand.grid(.sigma = svdRdcd[1], .C = 1)
+  svmModel <- train(x_train, y= y_train, 
+                    method = 'svmRadial', 
+                    preProcess = c('center', 'scale'), 
+                    metric = 'AUC', 
+                    trControl = ctrl,
+                    tuneGrid = svmTuning,
+                    fit = FALSE)
+  saveRDS(svmModel, 'rds_files/svm_model.rds')
+} else {
+  svmModel <- readRDS('rds_files/svm_model.rds')
+}
+```
+
+```{r}
+svmModel
+```
+
+**SVM on Test Data**
+```{r}
+svmPred <- readRDS('rds_files/svm_pred.rds')
+svmCFM <- confusionMatrix(svmPred, y_test, positive = 'yes')
+svmCFM
+```
+
+**SVM Variable Importance**
+```{r}
+varImp(svmModel)
+```
+
+_____
+
+## Nearest Shrunken Centroids
+**Training**
+```{r}
+if (TRAIN) {
+  nscGrid <- data.frame(.threshold = 0:15)
+  nscBio <- train(x=x_train, y = y_train,
+                  preProcess = c('center', 'scale'),
+                  method = "pam", 
+                  metric = "AUC",
+                  trControl = ctrl,
+                  tuneGrid = nscGrid)
+  saveRDS(nscModel, 'rds_files/nsc_model.rds')
+} else {
+  nscModel <- readRDS('rds_files/nsc_model.rds')
+}
+```
+
+```{r}
+nscModel
+```
+
+**NSC on Test Data**
+```{r}
+nscPred <- readRDS('rds_files/nsc_pred.rds')
+nscCFM <- confusionMatrix(nscPred, y_test, positive = 'yes')
+nscCFM
+```
+
+**NSC Variable Importance**
+```{r}
+varImp(nscModel)
+```
+_____
+
+```{r}
+# Stop cluster and parallel processing
+stopCluster(cl)
+registerDoSEQ()
+```
+
+## ROC Plots
+
+```{r}
+# ROC values
+nnetROC <- roc(y_test, readRDS('rds_files/nnet_prob.rds')$yes)
+ldaROC <- roc(y_test, readRDS('rds_files/lda_prob.rds')$yes)
+qdaROC <- roc(y_test, readRDS('rds_files/qda_prob.rds')$yes)
+lrROC <- roc(y_test, readRDS('rds_files/lr_prob.rds')$yes)
+plsdaROC <- roc(y_test, readRDS('rds_files/plsda_prob.rds')$yes)
+svmROC <- roc(y_test, readRDS('rds_files/svm_prob.rds')$yes)
+nscROC <- roc(y_test, readRDS('rds_files/nsc_prob.rds')$yes)
+```
+
+```{r}
+
+#AUC
+nnetAUC <- auc(nnetROC)
+ldaAUC <- auc(ldaROC)
+qdaAUC <- auc(qdaROC)
+lrAUC <- auc(lrROC)
+plsdaAUC <- auc(plsdaROC)
+svmAUC <- auc(svmROC)
+nscAUC <- auc(nscROC)
+```
+
+```
+# Plot takes a long time to complete
+roc_list <- list("Neural Network" = nnetROC,
+                 "LDA" = ldaROC,
+                 "QDA" = qdaROC,
+                 "PLS Discriminant Analysis" = plsdaROC,
+                 "Logistic Regression" = lrROC,
+                 "Support Vector Machines" = svmROC,
+                 "Nearest Shrunken Centroids" = nscROC)
+
+ggroc(roc_list, legacy.axes = TRUE) + scale_linetype_discrete() + ggtitle("Model ROC Curves") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1),
+                 color="darkgrey", linetype="dashed")
+```
+
+![Model ROC Curves](plots/roc_curves.png)
+
+
+## Model Metrics on Test Data
+```{r}
+
+model_names <- c('Neural Network', 'Linear Discriminant Analysis', 'Quadratic Discriminant Analysis', 
+                 'PLS Discriminant Analysis', 'Logistic Regression', 'Support Vector Machines',
+                 'Nearest Shrunken Centroids')
+
+metricsdf <- rbind(nnetCFM$byClass, ldaCFM$byClass)
+metricsdf <- rbind(metricsdf, qdaCFM$byClass)
+metricsdf <- rbind(metricsdf, plsdaCFM$byClass)
+metricsdf <- rbind(metricsdf, lrCFM$byClass)
+metricsdf <- rbind(metricsdf, svmCFM$byClass)
+metricsdf <- rbind(metricsdf, nscCFM$byClass)
+
+metricsdf <- cbind(data.frame("Models" = model_names, "AUC" = c(nnetAUC, ldaAUC, qdaAUC, 
+                                                                plsdaAUC, lrAUC, svmAUC, nscAUC)), 
+                   data.frame(metricsdf))
+metricsdf[order(-metricsdf$Sensitivity), ]
+
+```
+
+
+
+
+
+
+
+

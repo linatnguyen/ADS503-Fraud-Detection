@@ -1,15 +1,15 @@
 ---
-title: "ADS-503 Team 4 Final Project"
+title: "ADS-503 Team 4 EDA"
 author:
   - Leonard Littleton
   - Lina Nguyen
   - Emanuel Lucban
-date: "6/13/21"
+date: "6/25/21"
 output:
-  pdf_document: default
-  html_notebook: default
   html_document:
     df_print: paged
+  html_notebook: default
+  pdf_document: default
 ---
 
 ```{r}
