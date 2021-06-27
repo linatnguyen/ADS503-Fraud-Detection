@@ -354,13 +354,45 @@ varImp(nscModel)
 ```
 _____
 
+## Gradient Boosting Model
+
+**Training**
+```{r}
+if (TRAIN) {
+  gbmModel <- train(x=x_train, y = y_train,
+                  preProcess = c('center', 'scale'),
+                  method = "pam", 
+                  metric = "AUC",
+                  trControl = ctrl,
+                  tuneGrid = nscGrid)
+  saveRDS(gbmModel, 'rds_files/gbm_model.rds')
+} else {
+  gbmModel <- readRDS('rds_files/gbm_model.rds')
+}
+```
+
+```{r}
+gbmModel
+```
+
+**GBM Prediction on Test Data**
+```{r}
+gbmPred <- readRDS('rds_files/gbm_pred.rds')
+gbmCFM <- confusionMatrix(gbmPred, y_test, positive = 'yes')
+gbmCFM
+```
+
+_____
+
 ```{r}
 # Stop cluster and parallel processing
 stopCluster(cl)
 registerDoSEQ()
 ```
+____
 
-## ROC Plots
+
+## Model Metrics on Test Data
 
 ```{r}
 # ROC values
@@ -371,6 +403,7 @@ lrROC <- roc(y_test, readRDS('rds_files/lr_prob.rds')$yes)
 plsdaROC <- roc(y_test, readRDS('rds_files/plsda_prob.rds')$yes)
 svmROC <- roc(y_test, readRDS('rds_files/svm_prob.rds')$yes)
 nscROC <- roc(y_test, readRDS('rds_files/nsc_prob.rds')$yes)
+gbmROC <- roc(y_test, readRDS('rds_files/gbm_prob.rds')$yes)
 ```
 
 ```{r}
@@ -383,7 +416,34 @@ lrAUC <- auc(lrROC)
 plsdaAUC <- auc(plsdaROC)
 svmAUC <- auc(svmROC)
 nscAUC <- auc(nscROC)
+gbmAUC <- auc(gbmROC)
 ```
+
+```{r}
+
+model_names <- c('Neural Network', 'Linear Discriminant Analysis', 'Quadratic Discriminant Analysis', 
+                 'PLS Discriminant Analysis', 'Logistic Regression', 'Support Vector Machines',
+                 'Nearest Shrunken Centroids', 'Gradient Boosting Machine')
+
+metricsdf <- rbind(nnetCFM$byClass, ldaCFM$byClass)
+metricsdf <- rbind(metricsdf, qdaCFM$byClass)
+metricsdf <- rbind(metricsdf, plsdaCFM$byClass)
+metricsdf <- rbind(metricsdf, lrCFM$byClass)
+metricsdf <- rbind(metricsdf, svmCFM$byClass)
+metricsdf <- rbind(metricsdf, nscCFM$byClass)
+metricsdf <- rbind(metricsdf, gbmCFM$byClass)
+
+metricsdf <- cbind(data.frame("Models" = model_names, "AUC" = c(nnetAUC, ldaAUC, qdaAUC, 
+                                                                plsdaAUC, lrAUC, svmAUC, 
+                                                                nscAUC, gbmAUC)), 
+                   data.frame(metricsdf))
+metricsdf[order(-metricsdf$Sensitivity), ]
+
+```
+
+_____
+
+## ROC Plots
 
 ```
 # Plot takes a long time to complete
@@ -393,39 +453,14 @@ roc_list <- list("Neural Network" = nnetROC,
                  "PLS Discriminant Analysis" = plsdaROC,
                  "Logistic Regression" = lrROC,
                  "Support Vector Machines" = svmROC,
-                 "Nearest Shrunken Centroids" = nscROC)
+                 "Nearest Shrunken Centroids" = nscROC,
+                 "Gradient Boosting Machine" = gbmROC)
 
 ggroc(roc_list, legacy.axes = TRUE) + scale_linetype_discrete() + ggtitle("Model ROC Curves") +
   geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1),
                  color="darkgrey", linetype="dashed")
 ```
-
-![Model ROC Curves](plots/roc_curves.png)
-
-
-## Model Metrics on Test Data
-```{r}
-
-model_names <- c('Neural Network', 'Linear Discriminant Analysis', 'Quadratic Discriminant Analysis', 
-                 'PLS Discriminant Analysis', 'Logistic Regression', 'Support Vector Machines',
-                 'Nearest Shrunken Centroids')
-
-metricsdf <- rbind(nnetCFM$byClass, ldaCFM$byClass)
-metricsdf <- rbind(metricsdf, qdaCFM$byClass)
-metricsdf <- rbind(metricsdf, plsdaCFM$byClass)
-metricsdf <- rbind(metricsdf, lrCFM$byClass)
-metricsdf <- rbind(metricsdf, svmCFM$byClass)
-metricsdf <- rbind(metricsdf, nscCFM$byClass)
-
-metricsdf <- cbind(data.frame("Models" = model_names, "AUC" = c(nnetAUC, ldaAUC, qdaAUC, 
-                                                                plsdaAUC, lrAUC, svmAUC, nscAUC)), 
-                   data.frame(metricsdf))
-metricsdf[order(-metricsdf$Sensitivity), ]
-
-```
-
-
-
+![](plots/roc_curves.png)
 
 
 
