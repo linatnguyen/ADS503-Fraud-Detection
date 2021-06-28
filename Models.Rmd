@@ -26,6 +26,7 @@ library(MLmetrics)
 library(dplyr)
 library(MASS)
 library(pROC)
+library(gbm)
 
 # Parallel Processing
 library(doParallel)
@@ -382,6 +383,10 @@ gbmCFM <- confusionMatrix(gbmPred, y_test, positive = 'yes')
 gbmCFM
 ```
 
+**GBM Variable Importance**
+```{r}
+varImp(gbmModel)
+```
 _____
 
 ```{r}
